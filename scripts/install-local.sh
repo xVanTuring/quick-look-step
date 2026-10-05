@@ -15,10 +15,11 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 
-APP_ID=com.johnboiles.QuickLookStep
+APP_ID=tech.xvanturing.QuickLookStep
 EXTENSION_IDS="$APP_ID.StepPreview $APP_ID.StepThumbnail"
-# 早期本地测试用过的 bundle id，一并清理
-LEGACY_EXTENSION_IDS="tech.xvanturing.QuickLookStep.StepPreview tech.xvanturing.QuickLookStep.StepThumbnail"
+# 1.6.1 及更早的版本沿用上游的 bundle id，安装新版时一并清理
+LEGACY_APP_ID=com.johnboiles.QuickLookStep
+LEGACY_EXTENSION_IDS="$LEGACY_APP_ID.StepPreview $LEGACY_APP_ID.StepThumbnail"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
 
 DEST_DIR=/Applications
@@ -88,20 +89,40 @@ echo "==> 安装到 $DEST"
 mkdir -p "$DEST_DIR"
 if [ -e "$DEST" ]; then
     old_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$DEST/Contents/Info.plist" 2>/dev/null || true)
-    [ "$old_id" = "$APP_ID" ] || fail "$DEST 已存在，但 bundle id 是「$old_id」，不是本项目的 App，不覆盖。"
+    case "$old_id" in
+        "$APP_ID"|"$LEGACY_APP_ID") ;;
+        *) fail "$DEST 已存在，但 bundle id 是「$old_id」，不是本项目的 App，不覆盖。" ;;
+    esac
+    # 旧版就装在目标位置时，上面的清理会跳过它，这里补上注销
+    if [ "$old_id" = "$LEGACY_APP_ID" ]; then
+        pluginkit -r "$DEST"/Contents/PlugIns/*.appex 2>/dev/null || true
+        "$LSREGISTER" -u "$DEST" 2>/dev/null || true
+    fi
     rm -rf "$DEST"
 fi
 ditto "$SRC" "$DEST"
 
 echo "==> 注册扩展并重置 Quick Look 缓存"
 "$LSREGISTER" -f -R "$DEST"
-pluginkit -a "$DEST"/Contents/PlugIns/*.appex
-for id in $EXTENSION_IDS; do
-    pluginkit -e use -i "$id"
-done
 qlmanage -r >/dev/null 2>&1 || true
 qlmanage -r cache >/dev/null 2>&1 || true
 killall QuickLookUIService 2>/dev/null || true
+
+# pluginkit 是异步登记的，刚注销同类扩展时新登记可能被吞掉，逐个检查并重试
+for id in $EXTENSION_IDS; do
+    ext="$DEST/Contents/PlugIns/${id##*.}.appex"
+    registered=false
+    for _ in 1 2 3 4 5; do
+        pluginkit -a "$ext" 2>/dev/null || true
+        sleep 1
+        if pluginkit -m -A -D -v -i "$id" 2>/dev/null | grep -qF "$ext"; then
+            registered=true
+            break
+        fi
+    done
+    [ "$registered" = true ] || fail "$id 登记失败，可以重新运行本脚本，或者注销后重新登录再试。"
+    pluginkit -e use -i "$id"
+done
 
 echo "==> 当前登记的扩展"
 for id in $EXTENSION_IDS $LEGACY_EXTENSION_IDS; do

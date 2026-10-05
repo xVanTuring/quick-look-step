@@ -6,8 +6,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use triangulate::triangulate::triangulate;
 use step::step_file::StepFile;
 
+// Flat per-vertex buffers handed across the FFI boundary
+struct FlatMesh {
+    vertices: Vec<f32>,
+    normals: Vec<f32>,
+    colors: Vec<f32>,
+    indices: Vec<u32>,
+}
+
 // Internal helper to load a STEP file from disk and convert to flat arrays
-fn load_step_mesh(path: &str) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>), Box<dyn std::error::Error>> {
+fn load_step_mesh(path: &str) -> Result<FlatMesh, Box<dyn std::error::Error>> {
     // Read file into memory and parse STEP entities
     let data = std::fs::read(path)?;
     let flat = StepFile::strip_flatten(&data);
@@ -19,6 +27,9 @@ fn load_step_mesh(path: &str) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>), Box<dyn 
     // Convert Mesh { verts, triangles } into separate flat buffers
     let mut vertices = Vec::with_capacity(mesh.verts.len() * 3);
     let mut normals  = Vec::with_capacity(mesh.verts.len() * 3);
+    // Per-solid colour from the STEP STYLED_ITEMs; foxtrot uses (0.5, 0.5, 0.5)
+    // for solids without one.
+    let mut colors   = Vec::with_capacity(mesh.verts.len() * 3);
     for v in &mesh.verts {
         vertices.push(v.pos.x as f32);
         vertices.push(v.pos.y as f32);
@@ -27,6 +38,10 @@ fn load_step_mesh(path: &str) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>), Box<dyn 
         normals.push(v.norm.x as f32);
         normals.push(v.norm.y as f32);
         normals.push(v.norm.z as f32);
+
+        colors.push(v.color.x as f32);
+        colors.push(v.color.y as f32);
+        colors.push(v.color.z as f32);
     }
 
     let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
@@ -36,13 +51,15 @@ fn load_step_mesh(path: &str) -> Result<(Vec<f32>, Vec<f32>, Vec<u32>), Box<dyn 
         }
     }
 
-    Ok((vertices, normals, indices))
+    Ok(FlatMesh { vertices, normals, colors, indices })
 }
 
 #[repr(C)]
 pub struct MeshSlice<'a> {
     pub verts: *const f32,
     pub normals: *const f32,
+    /// RGB in 0...1, three floats per vertex.
+    pub colors: *const f32,
     pub tris: *const u32,
     pub vert_count: usize,
     pub tri_count: usize,
@@ -63,10 +80,11 @@ pub extern "C" fn foxtrot_load_step(
         let Ok(path) = c_str.to_str() else { return false };
 
         match load_step_mesh(path) {
-            Ok((vertices, normals, indices)) => {
+            Ok(FlatMesh { vertices, normals, colors, indices }) => {
                 let slice = MeshSlice {
                     verts:       vertices.as_ptr(),
                     normals:     normals.as_ptr(),
+                    colors:      colors.as_ptr(),
                     tris:        indices.as_ptr(),
                     vert_count:  vertices.len() / 3,
                     tri_count:   indices.len()  / 3,
@@ -77,6 +95,7 @@ pub extern "C" fn foxtrot_load_step(
                 // Hand ownership to the caller (SceneKit). Prevent Rust drop.
                 std::mem::forget(vertices);
                 std::mem::forget(normals);
+                std::mem::forget(colors);
                 std::mem::forget(indices);
                 true
             }
@@ -101,6 +120,11 @@ pub extern "C" fn foxtrot_free_mesh(slice: MeshSlice<'_>) {
         ));
         drop(Vec::from_raw_parts(
             slice.normals as *mut f32,
+            slice.vert_count * 3,
+            slice.vert_count * 3,
+        ));
+        drop(Vec::from_raw_parts(
+            slice.colors as *mut f32,
             slice.vert_count * 3,
             slice.vert_count * 3,
         ));
