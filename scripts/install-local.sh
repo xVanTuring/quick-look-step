@@ -97,6 +97,9 @@ if [ -e "$DEST" ]; then
     if [ "$old_id" = "$LEGACY_APP_ID" ]; then
         pluginkit -r "$DEST"/Contents/PlugIns/*.appex 2>/dev/null || true
         "$LSREGISTER" -u "$DEST" 2>/dev/null || true
+        # 同一路径换了 bundle id，正在运行的 Finder 仍按旧 id 缓存扩展的服务名，
+        # 空格预览会报 "Extension ... not found"，装完要重启 Finder
+        RESTART_FINDER=true
     fi
     rm -rf "$DEST"
 fi
@@ -123,6 +126,11 @@ for id in $EXTENSION_IDS; do
     [ "$registered" = true ] || fail "$id 登记失败，可以重新运行本脚本，或者注销后重新登录再试。"
     pluginkit -e use -i "$id"
 done
+
+if [ "${RESTART_FINDER:-false}" = true ]; then
+    echo "==> 替换了旧包名的版本，重启 Finder 以清除它缓存的旧扩展信息"
+    killall Finder 2>/dev/null || true
+fi
 
 echo "==> 当前登记的扩展"
 for id in $EXTENSION_IDS $LEGACY_EXTENSION_IDS; do

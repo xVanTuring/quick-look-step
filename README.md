@@ -53,6 +53,8 @@ If you used older versions of `QuickLookStep.app` (especially <v1.5), make sure 
 killall Finder
 ```
 
+If Quick Look shows `Extension tech.xvanturing.QuickLookStep.StepPreview not found` after upgrading from 1.6.1 or earlier, restart Finder as above. Those versions used the upstream `com.johnboiles.*` identifiers at the same path, and a Finder that was already running keeps looking up the extension under the old name.
+
 If restarting Finder doesn't make it work, I run this to do everything I know to do to clear the macOS cache:
 
 ```sh
